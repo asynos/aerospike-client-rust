@@ -29,6 +29,8 @@ mod query_policy;
 mod read_policy;
 mod record_exists_action;
 mod scan_policy;
+#[cfg(feature = "tls")]
+mod tls_policy;
 mod write_policy;
 
 pub use self::admin_policy::AdminPolicy;
@@ -44,6 +46,8 @@ pub use self::query_policy::QueryPolicy;
 pub use self::read_policy::ReadPolicy;
 pub use self::record_exists_action::RecordExistsAction;
 pub use self::scan_policy::ScanPolicy;
+#[cfg(feature = "tls")]
+pub use self::tls_policy::TlsPolicy;
 pub use self::write_policy::WritePolicy;
 
 use crate::expressions::FilterExpression;

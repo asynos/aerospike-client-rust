@@ -85,7 +85,7 @@ impl Queue {
 
             let conn = aerospike_rt::timeout(
                 Duration::from_secs(5),
-                Connection::new(&self.0.host.address(), &self.0.policy),
+                Connection::new(&self.0.host, &self.0.policy),
             )
             .await;
 

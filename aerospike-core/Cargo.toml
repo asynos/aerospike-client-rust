@@ -19,11 +19,15 @@ serde = { version = "1.0", features = ["derive"], optional = true }
 aerospike-rt = {path = "../aerospike-rt"}
 futures = {version = "0.3.16" }
 async-trait = "0.1.51"
+aerospike-tls = { path = "../aerospike-tls", optional = true }
 
 [features]
 serialization = ["serde"]
 rt-tokio = ["aerospike-rt/rt-tokio"]
 rt-async-std = ["aerospike-rt/rt-async-std"]
+tls = []
+tokio-rustls = ["aerospike-tls/tokio-rustls", "rt-tokio", "tls"]
+tokio-native-tls = ["aerospike-tls/tokio-native-tls", "rt-tokio", "tls"]
 
 [dev-dependencies]
 env_logger = "0.7"

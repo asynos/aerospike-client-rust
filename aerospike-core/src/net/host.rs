@@ -29,20 +29,29 @@ pub struct Host {
 
     /// Port of database server.
     pub port: u16,
+
+    /// Name used for TLS connection
+    pub tls_name: Option<String>,
 }
 
 impl Host {
     /// Create a new host instance given a hostname/IP and a port number.
-    pub fn new(name: &str, port: u16) -> Self {
+    pub fn new(name: &str, port: u16, tls_name: Option<&str>) -> Self {
         Host {
             name: name.to_string(),
             port,
+            tls_name: tls_name.map(|x| x.to_owned()),
         }
     }
 
     /// Returns a string representation of the host's address.
     pub fn address(&self) -> String {
         format!("{}:{}", self.name, self.port)
+    }
+
+    /// Returns a string representation of domain name for TLS conenction.
+    pub fn tls_name(&self) -> Option<&str> {
+        self.tls_name.as_ref().map(|x| x.as_str())
     }
 }
 
@@ -55,7 +64,10 @@ impl ToSocketAddrs for Host {
 
 impl fmt::Display for Host {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}:{}", self.name, self.port)
+        match &self.tls_name {
+            Some(tls_name) => write!(f, "{}:{}:{}", self.name, tls_name, self.port),
+            None => write!(f, "{}:{}", self.name, self.port),
+        }
     }
 }
 
@@ -97,14 +109,18 @@ mod tests {
     #[test]
     fn to_hosts() {
         assert_eq!(
-            vec![Host::new("foo", 3000)],
+            vec![Host::new("foo", 3000, None)],
             String::from("foo").to_hosts().unwrap()
         );
-        assert_eq!(vec![Host::new("foo", 3000)], "foo".to_hosts().unwrap());
-        assert_eq!(vec![Host::new("foo", 1234)], "foo:1234".to_hosts().unwrap());
+        assert_eq!(vec![Host::new("foo", 3000, None)], "foo".to_hosts().unwrap());
+        assert_eq!(vec![Host::new("foo", 1234, None)], "foo:1234".to_hosts().unwrap());
         assert_eq!(
-            vec![Host::new("foo", 1234), Host::new("bar", 1234)],
+            vec![Host::new("foo", 1234, None), Host::new("bar", 1234, None)],
             "foo:1234,bar:1234".to_hosts().unwrap()
+        );
+        assert_eq!(
+            vec![Host::new("foo", 1234, Some("bar")), Host::new("bar", 1234, Some("foo"))],
+            "foo:bar:1234,bar:foo:1234".to_hosts().unwrap()
         );
     }
 }

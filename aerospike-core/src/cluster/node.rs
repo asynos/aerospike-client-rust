@@ -17,7 +17,6 @@ use std::collections::HashMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::result::Result as StdResult;
-use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -27,6 +26,8 @@ use crate::errors::{ErrorKind, Result, ResultExt};
 use crate::net::{ConnectionPool, Host, PooledConnection};
 use crate::policy::ClientPolicy;
 use aerospike_rt::RwLock;
+
+use super::info_helper::parse_services_response;
 
 pub const PARTITIONS: usize = 4096;
 
@@ -144,10 +145,16 @@ impl Node {
 
     // Returns the services that the client should use for the cluster tend
     const fn services_name(&self) -> &'static str {
-        if self.client_policy.use_services_alternate {
-            "services-alternate"
-        } else {
-            "services"
+        #[cfg(not(feature = "tls"))]
+        let has_tls = false;
+        #[cfg(feature = "tls")]
+        let has_tls = self.client_policy.tls_policy.is_some();
+
+        match (self.client_policy.use_services_alternate, has_tls) {
+            (true, true) => "peers-tls-alt",
+            (true, false) => "peers-clear-alt",
+            (false, true) => "peers-tls-std",
+            (false, false) => "peers-clear-std",
         }
     }
 
@@ -204,31 +211,26 @@ impl Node {
             Some(friend_string) => friend_string,
         };
 
-        let friend_names = friend_string.split(';');
-        for friend in friend_names {
-            let mut friend_info = friend.split(':');
-            if friend_info.clone().count() != 2 {
-                error!(
-                    "Node info from asinfo:services is malformed. Expected HOST:PORT, but got \
-                     '{}'",
-                    friend
-                );
-                continue;
-            }
+        let services_response = parse_services_response(friend_string)?;
 
-            let host = friend_info.next().unwrap();
-            let port = u16::from_str(friend_info.next().unwrap())?;
-            let alias = match self.client_policy.ip_map {
-                Some(ref ip_map) if ip_map.contains_key(host) => {
-                    Host::new(ip_map.get(host).unwrap(), port)
+        let empty_ip_map : HashMap<String, String> = HashMap::new();
+
+        let ip_map = self.client_policy.ip_map.as_ref().unwrap_or(&empty_ip_map);
+
+        for node in services_response.nodes {
+            for endpoint in node.endpoints {
+                let mapped_ip =  ip_map
+                    .get(endpoint)
+                    .map(|x| x.as_str())
+                    .unwrap_or(endpoint);
+                
+                let alias = Host::new(mapped_ip, services_response.port, node.tls_name);
+
+                if current_aliases.contains_key(&alias) {
+                    self.reference_count.fetch_add(1, Ordering::Relaxed);
+                } else if !friends.contains(&alias) {
+                    friends.push(alias);
                 }
-                _ => Host::new(host, port),
-            };
-
-            if current_aliases.contains_key(&alias) {
-                self.reference_count.fetch_add(1, Ordering::Relaxed);
-            } else if !friends.contains(&alias) {
-                friends.push(alias);
             }
         }
 
