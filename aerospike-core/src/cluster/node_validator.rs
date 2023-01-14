@@ -80,7 +80,11 @@ impl NodeValidator {
     fn resolve_aliases(&mut self, host: &Host) -> Result<()> {
         self.aliases = (host.name.as_ref(), host.port)
             .to_socket_addrs()?
-            .map(|addr| Host::new(&addr.ip().to_string(), addr.port()))
+            .map(|addr| Host::new(
+                &addr.ip().to_string(),
+                addr.port(),
+                host.tls_name.as_ref().map(|x| x.as_str())
+            ))
             .collect();
         debug!("Resolved aliases for host {}: {:?}", host, self.aliases);
         if self.aliases.is_empty() {
@@ -91,7 +95,7 @@ impl NodeValidator {
     }
 
     async fn validate_alias(&mut self, cluster: &Cluster, alias: &Host) -> Result<()> {
-        let mut conn = Connection::new(&alias.address(), &self.client_policy).await?;
+        let mut conn = Connection::new(&alias, &self.client_policy).await?;
         let info_map = Message::info(&mut conn, &["node", "cluster-name", "features"]).await?;
 
         match info_map.get("node") {

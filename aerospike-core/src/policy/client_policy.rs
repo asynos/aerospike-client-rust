@@ -17,6 +17,8 @@ use std::time::Duration;
 
 use crate::commands::admin_command::AdminCommand;
 use crate::errors::Result;
+#[cfg(feature = "tls")]
+use crate::policy::TlsPolicy;
 
 /// `ClientPolicy` encapsulates parameters for client policy command.
 #[derive(Debug, Clone)]
@@ -83,6 +85,9 @@ pub struct ClientPolicy {
     /// to join the client's view of the cluster. Should only be set when connecting to servers
     /// that support the "cluster-name" info command.
     pub cluster_name: Option<String>,
+
+    #[cfg(feature = "tls")]
+    pub tls_policy: Option<TlsPolicy>,
 }
 
 impl Default for ClientPolicy {
@@ -100,6 +105,8 @@ impl Default for ClientPolicy {
             thread_pool_size: 128,
             cluster_name: None,
             buffer_reclaim_threshold: 65536,
+            #[cfg(feature = "tls")]
+            tls_policy: None,
         }
     }
 }

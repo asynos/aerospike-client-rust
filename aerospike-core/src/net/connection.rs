@@ -13,6 +13,7 @@
 // License for the specific language governing permissions and limitations under
 // the License.
 
+use crate::Host;
 use crate::commands::admin_command::AdminCommand;
 use crate::commands::buffer::Buffer;
 use crate::errors::{ErrorKind, Result};
@@ -26,6 +27,7 @@ use aerospike_rt::time::{Duration, Instant};
 #[cfg(all(any(feature = "rt-async-std"), not(feature = "rt-tokio")))]
 use futures::{AsyncReadExt, AsyncWriteExt};
 use std::ops::Add;
+use super::connection_stream::ConnectionStream;
 
 #[derive(Debug)]
 pub struct Connection {
@@ -36,7 +38,7 @@ pub struct Connection {
     idle_deadline: Option<Instant>,
 
     // connection object
-    conn: TcpStream,
+    conn: ConnectionStream,
 
     bytes_read: usize,
 
@@ -44,18 +46,31 @@ pub struct Connection {
 }
 
 impl Connection {
-    pub async fn new(addr: &str, policy: &ClientPolicy) -> Result<Self> {
-        let stream = aerospike_rt::timeout(Duration::from_secs(10), TcpStream::connect(addr)).await;
-        if stream.is_err() {
-            bail!(ErrorKind::Connection(
+    pub async fn new(host: &Host, policy: &ClientPolicy) -> Result<Self> {
+        let stream = aerospike_rt::timeout(Duration::from_secs(10), TcpStream::connect(host.address())).await
+            .map_err(|_| ErrorKind::Connection(
                 "Could not open network connection".to_string()
-            ));
-        }
+            ))??;
+
+        #[cfg(feature = "tls")]
+        let stream = match &policy.tls_policy {
+            Some(tls_policy) => {
+                ConnectionStream::Tls(tls_policy.tls_connector.connect(host.tls_name().unwrap_or(host.name.as_str()), stream).await
+                    .map_err(|_| ErrorKind::Connection(
+                        "Could not open TLS network connection".to_string()
+                    ))?)
+            },
+            None => ConnectionStream::Tcp(stream),
+        };
+
+        #[cfg(not(feature = "tls"))]
+        let stream = ConnectionStream::Tcp(stream);
+
         let mut conn = Connection {
             buffer: Buffer::new(policy.buffer_reclaim_threshold),
             bytes_read: 0,
             timeout: policy.timeout,
-            conn: stream.unwrap()?,
+            conn: stream.into(),
             idle_timeout: policy.idle_timeout,
             idle_deadline: policy.idle_timeout.map(|timeout| Instant::now() + timeout),
         };

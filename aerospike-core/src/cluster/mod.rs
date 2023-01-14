@@ -17,6 +17,7 @@ pub mod node;
 pub mod node_validator;
 pub mod partition;
 pub mod partition_tokenizer;
+mod info_helper;
 
 use aerospike_rt::time::{Duration, Instant};
 use std::collections::HashMap;

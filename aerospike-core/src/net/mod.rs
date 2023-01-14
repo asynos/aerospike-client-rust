@@ -21,5 +21,6 @@ pub use self::host::ToHosts;
 
 mod connection;
 mod connection_pool;
+mod connection_stream;
 pub mod host;
 mod parser;

@@ -34,13 +34,15 @@ async = ["aerospike-core"]
 sync = ["aerospike-sync"]
 rt-tokio = ["aerospike-core/rt-tokio", "aerospike-macro/rt-tokio"]
 rt-async-std = ["aerospike-core/rt-async-std", "aerospike-macro/rt-async-std"]
+tokio-rustls = ["aerospike-core/tokio-rustls"]
+tokio-native-tls = ["aerospike-core/tokio-native-tls"]
 
 [[bench]]
 name = "client_server"
 harness = false
 
 [workspace]
-members = ["tools/benchmark", "aerospike-core", "aerospike-rt", "aerospike-sync", "aerospike-macro"]
+members = ["tools/benchmark", "aerospike-core", "aerospike-rt", "aerospike-sync", "aerospike-macro", "aerospike-tls"]
 
 [dev-dependencies]
 env_logger = "0.7"

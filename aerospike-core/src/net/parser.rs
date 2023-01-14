@@ -35,7 +35,7 @@ impl<'a> Parser<'a> {
         let mut hosts = Vec::new();
         loop {
             let addr = self.read_addr_tuple()?;
-            let (host, _tls_name, port) = match addr.len() {
+            let (host, tls_name, port) = match addr.len() {
                 3 => (addr[0].clone(), Some(addr[1].clone()), addr[2].parse()?),
                 2 => {
                     if let Ok(port) = addr[1].parse() {
@@ -49,8 +49,8 @@ impl<'a> Parser<'a> {
                     "Invalid address string".to_string()
                 )),
             };
-            // TODO: add TLS name
-            hosts.push(Host::new(&host, port));
+
+            hosts.push(Host::new(&host, port, tls_name.as_ref().map(|x| x.as_str())));
 
             match self.peek() {
                 Some(&c) if c == ',' => self.next_char(),
@@ -150,25 +150,43 @@ mod tests {
     #[test]
     fn read_hosts() {
         assert_eq!(
-            vec![Host::new("foo", 3000)],
+            vec![Host::new("foo", 3000, None)],
             Parser::new("foo", 3000).read_hosts().unwrap()
         );
         assert_eq!(
-            vec![Host::new("foo", 3000)],
+            vec![Host::new("foo", 3000, Some("bar"))],
             Parser::new("foo:bar", 3000).read_hosts().unwrap()
         );
         assert_eq!(
-            vec![Host::new("foo", 1234)],
+            vec![Host::new("foo", 1234, None)],
             Parser::new("foo:1234", 3000).read_hosts().unwrap()
         );
         assert_eq!(
-            vec![Host::new("foo", 1234)],
+            vec![Host::new("foo", 1234, Some("bar"))],
             Parser::new("foo:bar:1234", 3000).read_hosts().unwrap()
         );
         assert_eq!(
-            vec![Host::new("foo", 1234), Host::new("bar", 1234)],
+            vec![Host::new("foo", 1234, None), Host::new("bar", 1234, None)],
             Parser::new("foo:1234,bar:1234", 3000).read_hosts().unwrap()
         );
+
+        assert_eq!(
+            vec![Host::new("foo", 3000, Some("bar"))],
+            Parser::new("foo:bar", 3000).read_hosts().unwrap()
+        );
+        assert_eq!(
+            vec![Host::new("foo", 1234, Some("bar"))],
+            Parser::new("foo:bar:1234", 3000).read_hosts().unwrap()
+        );
+        assert_eq!(
+            vec![Host::new("foo", 1234, Some("bar"))],
+            Parser::new("foo:bar:1234", 3000).read_hosts().unwrap()
+        );
+        assert_eq!(
+            vec![Host::new("foo", 1234, Some("bar")), Host::new("bar", 1234, Some("barbar"))],
+            Parser::new("foo:bar:1234,bar:barbar:1234", 3000).read_hosts().unwrap()
+        );
+
         assert!(Parser::new("", 3000).read_hosts().is_err());
         assert!(Parser::new(",", 3000).read_hosts().is_err());
         assert!(Parser::new("foo,", 3000).read_hosts().is_err());

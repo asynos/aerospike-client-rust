@@ -147,6 +147,8 @@ extern crate lazy_static;
 extern crate log;
 extern crate pwhash;
 extern crate rand;
+#[cfg(feature = "tls")]
+pub extern crate aerospike_tls;
 
 pub use batch::BatchRead;
 pub use bin::{Bin, Bins};
@@ -170,6 +172,8 @@ pub use result_code::ResultCode;
 pub use task::{IndexTask, RegisterTask, Task};
 pub use user::User;
 pub use value::{FloatValue, Value};
+#[cfg(feature = "tls")]
+pub use aerospike_tls::{self as tls, *};
 
 #[macro_use]
 pub mod errors;
