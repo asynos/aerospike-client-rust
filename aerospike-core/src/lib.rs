@@ -138,7 +138,6 @@
 extern crate base64;
 extern crate byteorder;
 extern crate crossbeam_queue;
-extern crate ripemd160;
 #[macro_use]
 extern crate error_chain;
 #[macro_use]
@@ -170,6 +169,7 @@ pub use result_code::ResultCode;
 pub use task::{IndexTask, RegisterTask, Task};
 pub use user::User;
 pub use value::{FloatValue, Value};
+pub use commands::operate_command::OperateRecord;
 
 #[macro_use]
 pub mod errors;

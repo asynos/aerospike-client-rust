@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::sync::Arc;
+use std::ops::Add;
+use std::sync::{Arc, Weak};
 
 use crate::cluster::partition::Partition;
 use crate::cluster::{Cluster, Node};
@@ -28,20 +29,37 @@ pub struct SingleCommand<'a> {
     cluster: Arc<Cluster>,
     pub key: &'a Key,
     partition: Partition<'a>,
+    last_tried: Weak<Node>,
+    replica: crate::policy::Replica,
+}
+
+pub async fn try_with_timeout<O, F: futures::Future<Output = Result<O>>> (deadline: Option<Instant>, future: F) -> Result<O> {
+    if let Some(deadline) = deadline {
+        aerospike_rt::timeout_at(deadline, future).await.unwrap_or_else(
+            move |_|{
+                Err(ErrorKind::Connection("Timeout".to_string()).into())
+        })
+    } else {
+        future.await
+    }
 }
 
 impl<'a> SingleCommand<'a> {
-    pub fn new(cluster: Arc<Cluster>, key: &'a Key) -> Self {
+    pub fn new(cluster: Arc<Cluster>, key: &'a Key, replica: crate::policy::Replica,) -> Self {
         let partition = Partition::new_by_key(key);
         SingleCommand {
             cluster,
             key,
             partition,
+            last_tried: Weak::new(),
+            replica,
         }
     }
 
-    pub async fn get_node(&self) -> Result<Arc<Node>> {
-        self.cluster.get_node(&self.partition).await
+    pub fn get_node(&mut self) -> Result<Arc<Node>> {
+        let this_time = self.cluster.get_node(&self.partition, self.replica, self.last_tried.clone())?;
+        self.last_tried = Arc::downgrade(&this_time);
+        Ok(this_time)
     }
 
     pub async fn empty_socket(conn: &mut Connection) -> Result<()> {
@@ -79,28 +97,34 @@ impl<'a> SingleCommand<'a> {
             // Sleep before trying again, after the first iteration
             if iterations > 1 {
                 if let Some(sleep_between_retries) = policy.sleep_between_retries() {
+                    // check for command timeout
+                    if let Some(deadline) = deadline {
+                        if Instant::now().add(sleep_between_retries) > deadline {
+                            break;
+                        }
+                    }
+        
                     sleep(sleep_between_retries).await;
                 } else {
+                    // check for command timeout
+                    if let Some(deadline) = deadline {
+                        if Instant::now() > deadline {
+                            break;
+                        }
+                    }
+        
                     // yield to free space for the runtime to execute other futures between runs because the loop would block the thread
                     aerospike_rt::task::yield_now().await;
                 }
             }
 
-            // check for command timeout
-            if let Some(deadline) = deadline {
-                if Instant::now() > deadline {
-                    break;
-                }
-            }
-
             // set command node, so when you return a record it has the node
-            let node_future = cmd.get_node();
-            let node = match node_future.await {
+            let node = match cmd.get_node() {
                 Ok(node) => node,
                 Err(_) => continue, // Node is currently inactive. Retry.
             };
 
-            let mut conn = match node.get_connection().await {
+            let mut conn = match try_with_timeout(deadline, node.get_connection()).await {
                 Ok(conn) => conn,
                 Err(err) => {
                     warn!("Node {}: {}", node, err);
@@ -110,12 +134,13 @@ impl<'a> SingleCommand<'a> {
 
             cmd.prepare_buffer(&mut conn)
                 .chain_err(|| "Failed to prepare send buffer")?;
-            cmd.write_timeout(&mut conn, policy.timeout())
+
+            try_with_timeout(deadline, cmd.write_timeout(&mut conn, policy.timeout()))
                 .await
                 .chain_err(|| "Failed to set timeout for send buffer")?;
 
             // Send command.
-            if let Err(err) = cmd.write_buffer(&mut conn).await {
+            if let Err(err) = try_with_timeout(deadline, cmd.write_buffer(&mut conn)).await {
                 // IO errors are considered temporary anomalies. Retry.
                 // Close socket to flush out possible garbage. Do not put back in pool.
                 conn.invalidate();
@@ -124,7 +149,7 @@ impl<'a> SingleCommand<'a> {
             }
 
             // Parse results.
-            if let Err(err) = cmd.parse_result(&mut conn).await {
+            if let Err(err) = try_with_timeout(deadline, cmd.parse_result(&mut conn)).await {
                 // close the connection
                 // cancelling/closing the batch/multi commands will return an error, which will
                 // close the connection to throw away its data and signal the server about the
@@ -133,10 +158,9 @@ impl<'a> SingleCommand<'a> {
                     conn.invalidate();
                 }
                 return Err(err);
+            } else {
+                return Ok(());
             }
-
-            // command has completed successfully.  Exit method.
-            return Ok(());
         }
 
         bail!(ErrorKind::Connection("Timeout".to_string()))

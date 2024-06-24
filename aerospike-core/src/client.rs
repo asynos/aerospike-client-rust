@@ -20,6 +20,7 @@ use std::vec::Vec;
 
 use crate::batch::BatchExecutor;
 use crate::cluster::{Cluster, Node};
+use crate::commands::operate_command::OperateRecord;
 use crate::commands::{
     DeleteCommand, ExecuteUDFCommand, ExistsCommand, OperateCommand, QueryCommand, ReadCommand,
     ScanCommand, TouchCommand, WriteCommand,
@@ -102,20 +103,19 @@ impl Client {
 
     /// Closes the connection to the Aerospike cluster.
     pub async fn close(&self) -> Result<()> {
-        self.cluster.close().await?;
+        self.cluster.close()?;
         Ok(())
     }
 
     /// Returns `true` if the client is connected to any cluster nodes.
     pub async fn is_connected(&self) -> bool {
-        self.cluster.is_connected().await
+        self.cluster.is_connected()
     }
 
     /// Returns a list of the names of the active server nodes in the cluster.
     pub async fn node_names(&self) -> Vec<String> {
         self.cluster
             .nodes()
-            .await
             .iter()
             .map(|node| node.name().to_owned())
             .collect()
@@ -123,12 +123,12 @@ impl Client {
 
     /// Return node given its name.
     pub async fn get_node(&self, name: &str) -> Result<Arc<Node>> {
-        self.cluster.get_node_by_name(name).await
+        self.cluster.get_node_by_name(name)
     }
 
     /// Returns a list of active server nodes in the cluster.
     pub async fn nodes(&self) -> Vec<Arc<Node>> {
-        self.cluster.nodes().await
+        self.cluster.nodes()
     }
 
     /// Read record for the specified key. Depending on the bins value provided, all record bins,
@@ -184,7 +184,7 @@ impl Client {
         T: Into<Bins> + Send + Sync + 'static,
     {
         let bins = bins.into();
-        let mut command = ReadCommand::new(policy, self.cluster.clone(), key, bins);
+        let mut command = ReadCommand::new(&policy.base_policy, self.cluster.clone(), key, bins, policy.replica);
         command.execute().await?;
         Ok(command.record.unwrap())
     }
@@ -446,10 +446,10 @@ impl Client {
         policy: &WritePolicy,
         key: &Key,
         ops: &[Operation<'_>],
-    ) -> Result<Record> {
+    ) -> Result<OperateRecord> {
         let mut command = OperateCommand::new(policy, self.cluster.clone(), key, ops);
         command.execute().await?;
-        Ok(command.read_command.record.unwrap())
+        Ok(command.record)
     }
 
     /// Register a package containing user-defined functions (UDF) with the cluster. This
@@ -509,7 +509,7 @@ impl Client {
             udf_body.len(),
             language
         );
-        let node = self.cluster.get_random_node().await?;
+        let node = self.cluster.get_random_node()?;
         let response = node.info(&[&cmd]).await?;
 
         if let Some(msg) = response.get("error") {
@@ -553,7 +553,7 @@ impl Client {
     /// Remove a user-defined function (UDF) module from the server.
     pub async fn remove_udf(&self, udf_name: &str, language: UDFLang) -> Result<()> {
         let cmd = format!("udf-remove:filename={}.{};", udf_name, language);
-        let node = self.cluster.get_random_node().await?;
+        let node = self.cluster.get_random_node()?;
         // Sample response: {"udf-remove:filename=file_name.LUA;": "ok"}
         let response = node.info(&[&cmd]).await?;
 
@@ -647,10 +647,10 @@ impl Client {
         T: Into<Bins> + Send + Sync + 'static,
     {
         let bins = bins.into();
-        let nodes = self.cluster.nodes().await;
+        let nodes = self.cluster.nodes();
         let recordset = Arc::new(Recordset::new(policy.record_queue_size, nodes.len()));
         for node in nodes {
-            let partitions = self.cluster.node_partitions(node.as_ref(), namespace).await;
+            let partitions = self.cluster.node_partitions(node.as_ref(), namespace);
             let node = node.clone();
             let recordset = recordset.clone();
             let policy = policy.clone();
@@ -688,7 +688,7 @@ impl Client {
     where
         T: Into<Bins> + Send + Sync + 'static,
     {
-        let partitions = self.cluster.node_partitions(node.as_ref(), namespace).await;
+        let partitions = self.cluster.node_partitions(node.as_ref(), namespace);
         let bins = bins.into();
         let recordset = Arc::new(Recordset::new(policy.record_queue_size, 1));
         let t_recordset = recordset.clone();
@@ -746,13 +746,12 @@ impl Client {
         statement.validate()?;
         let statement = Arc::new(statement);
 
-        let nodes = self.cluster.nodes().await;
+        let nodes = self.cluster.nodes();
         let recordset = Arc::new(Recordset::new(policy.record_queue_size, nodes.len()));
         for node in nodes {
             let partitions = self
                 .cluster
-                .node_partitions(node.as_ref(), &statement.namespace)
-                .await;
+                .node_partitions(node.as_ref(), &statement.namespace);
             let node = node.clone();
             let t_recordset = recordset.clone();
             let policy = policy.clone();
@@ -787,8 +786,7 @@ impl Client {
         let statement = Arc::new(statement);
         let partitions = self
             .cluster
-            .node_partitions(node.as_ref(), &statement.namespace)
-            .await;
+            .node_partitions(node.as_ref(), &statement.namespace);
 
         aerospike_rt::spawn(async move {
             let mut command = QueryCommand::new(&policy, node, statement, t_recordset, partitions);
@@ -924,7 +922,7 @@ impl Client {
     }
 
     async fn send_info_cmd(&self, cmd: &str) -> Result<()> {
-        let node = self.cluster.get_random_node().await?;
+        let node = self.cluster.get_random_node()?;
         let response = node.info(&[cmd]).await?;
 
         if let Some(v) = response.values().next() {

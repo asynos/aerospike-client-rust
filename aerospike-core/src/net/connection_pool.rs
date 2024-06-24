@@ -20,128 +20,102 @@ use std::sync::Arc;
 use crate::errors::{Error, ErrorKind, Result};
 use crate::net::{Connection, Host};
 use crate::policy::ClientPolicy;
-use futures::executor::block_on;
-use futures::lock::Mutex;
+use std::sync::Mutex;
 use std::collections::VecDeque;
 use std::time::Duration;
+use aerospike_rt::{Semaphore, OwnedSemaphorePermit};
 
 #[derive(Debug)]
 struct IdleConnection(Connection);
 
 #[derive(Debug)]
-struct QueueInternals {
-    connections: VecDeque<IdleConnection>,
-    num_conns: usize,
-}
-
-#[derive(Debug)]
 struct SharedQueue {
-    internals: Mutex<QueueInternals>,
-    capacity: usize,
+    // SYNCHRONOUS LOCK! Do not hold across an await point or it _will_ deadlock.
+    connections: Mutex<VecDeque<IdleConnection>>,
     host: Host,
     policy: ClientPolicy,
 }
 
-#[derive(Debug)]
-struct Queue(Arc<SharedQueue>);
+#[derive(Debug, Clone)]
+struct Queue(Arc<SharedQueue>, Arc<Semaphore>);
 
 impl Queue {
     pub fn with_capacity(capacity: usize, host: Host, policy: ClientPolicy) -> Self {
-        let internals = QueueInternals {
-            connections: VecDeque::with_capacity(capacity),
-            num_conns: 0,
-        };
         let shared = SharedQueue {
-            internals: Mutex::new(internals),
-            capacity,
+            connections: Mutex::new(VecDeque::with_capacity(capacity)),
             host,
             policy,
         };
-        Queue(Arc::new(shared))
+        Queue(Arc::new(shared), Arc::new(Semaphore::new(capacity)))
     }
 
     pub async fn get(&self) -> Result<PooledConnection> {
-        let mut internals = self.0.internals.lock().await;
-        let connection;
-        loop {
-            if let Some(IdleConnection(mut conn)) = internals.connections.pop_front() {
-                if conn.is_idle() {
-                    internals.num_conns -= 1;
-                    conn.close().await;
-                    continue;
+        let Ok(permit) = self.1.clone().try_acquire_owned() else {
+            bail!(ErrorKind::Connection(
+                "Too many connections".to_string()
+            ));
+        };
+        let mut connections_to_free = Vec::new();
+        let mut conn: Option<Connection> = None;
+        {
+            let mut connections = self.0.connections.lock().unwrap();
+            while let Some(IdleConnection(this_conn)) = connections.pop_front() {
+                if this_conn.is_idle() {
+                    connections_to_free.push(this_conn);
+                } else {
+                    conn = Some(this_conn);
+                    break;
                 }
-                connection = conn;
-                break;
             }
+        }
 
-            if internals.num_conns >= self.0.capacity {
-                bail!(ErrorKind::NoMoreConnections);
-            }
+        for mut connection in connections_to_free {
+            connection.close().await;
+        }
 
-            internals.num_conns += 1;
-
-            // Free the lock to prevent deadlocking
-            drop(internals);
-
-            let conn = aerospike_rt::timeout(
+        if conn.is_none() {
+            let new_conn = aerospike_rt::timeout(
                 Duration::from_secs(5),
                 Connection::new(&self.0.host.address(), &self.0.policy),
             )
             .await;
 
-            if conn.is_err() {
-                let mut internals = self.0.internals.lock().await;
-                internals.num_conns -= 1;
-                drop(internals);
+            let Ok(Ok(new_conn)) = new_conn else {
                 bail!(ErrorKind::Connection(
                     "Could not open network connection".to_string()
                 ));
-            }
+            };
 
-            let conn = conn.unwrap()?;
-
-            connection = conn;
-            break;
+            conn = Some(new_conn);
         }
 
         Ok(PooledConnection {
             queue: self.clone(),
-            conn: Some(connection),
+            conn,
+            _permit: permit,
         })
     }
 
-    pub async fn put_back(&self, mut conn: Connection) {
-        let mut internals = self.0.internals.lock().await;
-        if internals.num_conns < self.0.capacity {
-            internals.connections.push_back(IdleConnection(conn));
-        } else {
-            conn.close().await;
-            internals.num_conns -= 1;
-        }
+    pub fn put_back(&self, conn: Connection) {
+        let mut connections = self.0.connections.lock().unwrap();
+        connections.push_back(IdleConnection(conn));
     }
 
-    pub async fn drop_conn(&self, mut conn: Connection) {
-        {
-            let mut internals = self.0.internals.lock().await;
-            internals.num_conns -= 1;
-        }
-        conn.close().await;
+    pub fn drop_conn(&self, mut conn: Connection) {
+        aerospike_rt::spawn(async move { conn.close().await });
     }
 
     pub async fn clear(&mut self) {
-        let mut internals = self.0.internals.lock().await;
-        for mut conn in internals.connections.drain(..) {
+        let connections = {
+            let mut connections = self.0.connections.lock().unwrap();
+            std::mem::take(connections.deref_mut())
+        };
+        for mut conn in connections {
             conn.0.close().await;
         }
-        internals.num_conns = 0;
     }
 }
 
-impl Clone for Queue {
-    fn clone(&self) -> Self {
-        Queue(self.0.clone())
-    }
-}
 
 #[derive(Debug)]
 pub struct ConnectionPool {
@@ -212,19 +186,20 @@ impl ConnectionPool {
 pub struct PooledConnection {
     queue: Queue,
     pub conn: Option<Connection>,
+    _permit: OwnedSemaphorePermit,
 }
 
 impl PooledConnection {
     pub fn invalidate(mut self) {
         let conn = self.conn.take().unwrap();
-        block_on(self.queue.drop_conn(conn));
+        self.queue.drop_conn(conn);
     }
 }
 
 impl Drop for PooledConnection {
     fn drop(&mut self) {
         if let Some(conn) = self.conn.take() {
-            block_on(self.queue.put_back(conn));
+            self.queue.put_back(conn);
         }
     }
 }

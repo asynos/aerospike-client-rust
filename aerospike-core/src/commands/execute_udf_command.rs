@@ -41,7 +41,7 @@ impl<'a> ExecuteUDFCommand<'a> {
         args: Option<&'a [Value]>,
     ) -> Self {
         ExecuteUDFCommand {
-            read_command: ReadCommand::new(&policy.base_policy, cluster, key, Bins::All),
+            read_command: ReadCommand::new(&policy.base_policy, cluster, key, Bins::All, crate::policy::Replica::Master),
             policy,
             package_name,
             function_name,
@@ -79,8 +79,8 @@ impl<'a> Command for ExecuteUDFCommand<'a> {
         )
     }
 
-    async fn get_node(&self) -> Result<Arc<Node>> {
-        self.read_command.get_node().await
+    fn get_node(&mut self) -> Result<Arc<Node>> {
+        self.read_command.get_node()
     }
 
     async fn parse_result(&mut self, conn: &mut Connection) -> Result<()> {
